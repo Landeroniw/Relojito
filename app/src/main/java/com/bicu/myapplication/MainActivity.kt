@@ -17,6 +17,7 @@ import androidx.core.view.WindowInsetsControllerCompat
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -26,6 +27,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -37,8 +39,11 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
@@ -50,9 +55,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.Font
@@ -60,6 +67,8 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
@@ -115,7 +124,7 @@ private const val CLOCK_SIZE_FRACTION_MAX = 1.0f
 
 // Tamaño fijo de las tarjetas, proporcional a la pantalla (como usar
 // unidades vh/vw en web): 80% del alto y 15% del ancho de la pantalla.
-private const val CARD_HEIGHT_SCREEN_FRACTION = 0.8f
+private const val CARD_HEIGHT_SCREEN_FRACTION = 0.4f
 private const val CARD_WIDTH_SCREEN_FRACTION = 0.25f
 
 // Las tres variantes de estilo que pidió el usuario. "Cursiva" usa peso
@@ -161,13 +170,6 @@ private fun saveClockStyle(activity: Activity, style: ClockFontStyleOption) {
         putString(KEY_CLOCK_STYLE, style.name)
     }
 }
-
-// Paleta de colores preseleccionados para el color picker (versión simple:
-// swatches en vez de una rueda HSV completa).
-private val ClockColorPalette = listOf(
-    Color.White, Color.Red, Color(0xFFFF9800), Color.Yellow, Color.Green,
-    Color.Cyan, Color.Blue, Color(0xFF9C27B0), Color(0xFFE91E63), Color.Gray
-)
 
 // --- Fuente del reloj (predefinida o cargada por el usuario) ---
 
@@ -390,7 +392,13 @@ fun ClockScreen() {
                 cardWidth = cardWidth,
                 cardHeight = cardHeight
             )
-            ColonSeparator(color = clockColor)
+            ColonSeparator(
+                color = clockColor,
+                sizeFraction = clockSizeFraction,
+                style = clockStyle,
+                fontFamily = clockFontFamily,
+                cardHeight = cardHeight
+            )
             DigitCard(
                 text = minuteText,
                 color = clockColor,
@@ -605,20 +613,35 @@ private fun DigitCard(
     }
 }
 
-// Los dos puntos verticales que separan la tarjeta de hora de la de minutos.
-// Usa el mismo color que el reloj para que se vea como un solo conjunto.
+// El ":" se dibuja a la mitad del tamaño de los dígitos, para que no
+// compita visualmente con los números.
+private const val COLON_SIZE_RATIO = 0.5f
+
+// El ":" que separa la tarjeta de hora de la de minutos. Es texto real (no
+// círculos fijos) para que herede color, tamaño, estilo y fuente igual que
+// los dígitos.
 @Composable
-private fun ColonSeparator(color: Color) {
-    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        repeat(2) {
-            Box(
-                modifier = Modifier
-                    .size(10.dp)
-                    .clip(CircleShape)
-                    .background(color)
-            )
-        }
-    }
+private fun ColonSeparator(
+    color: Color,
+    sizeFraction: Float,
+    style: ClockFontStyleOption,
+    fontFamily: FontFamily,
+    cardHeight: Dp
+) {
+    val density = LocalDensity.current
+    // Mismo criterio que DigitCard: el alto disponible (con margen interno)
+    // multiplicado por la fracción elegida en el slider de tamaño, y luego
+    // reducido a la mitad respecto al tamaño de los dígitos.
+    val usableHeight = cardHeight * (1f - CARD_INNER_PADDING_FRACTION * 2)
+    val fontSize = with(density) { (usableHeight * sizeFraction * COLON_SIZE_RATIO).toSp() }
+    Text(
+        text = ":",
+        color = color,
+        fontSize = fontSize,
+        fontWeight = style.weight,
+        fontStyle = if (style.italic) FontStyle.Italic else FontStyle.Normal,
+        fontFamily = fontFamily
+    )
 }
 
 // Pantalla completa de personalización del reloj: panel izquierdo con una
@@ -764,49 +787,217 @@ private fun ClockCustomizerScreen(
                     )
                 }
 
-                // --- Color picker (swatches) ---
+                // --- Color: caja de saturación/brillo + slider de matiz + hex ---
                 Text(
                     text = "Color",
                     color = Color.White,
                     fontSize = 16.sp,
                     modifier = Modifier.padding(top = 16.dp, bottom = 8.dp)
                 )
-                // Agrupa la paleta en filas de 5 swatches para que quepan en el panel.
-                ClockColorPalette.chunked(5).forEach { rowColors ->
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        modifier = Modifier.padding(bottom = 12.dp)
-                    ) {
-                        rowColors.forEach { swatchColor ->
-                            ColorSwatch(
-                                color = swatchColor,
-                                selected = swatchColor == selectedColor,
-                                onClick = { onColorSelected(swatchColor) }
-                            )
-                        }
-                    }
+                ColorPickerSection(
+                    selectedColor = selectedColor,
+                    onColorSelected = onColorSelected
+                )
+
+                // Botón "Guardar" al final: hace lo mismo que la "X" de arriba
+                // (los cambios ya se guardan al vuelo, esto solo cierra la pantalla).
+                Button(
+                    onClick = onClose,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 24.dp, bottom = 8.dp)
+                ) {
+                    Text(text = "Guardar")
                 }
             }
         }
     }
 }
 
-// Un círculo de color seleccionable dentro del color picker. El borde blanco
-// indica cuál es el color activo actualmente.
+// Radio del círculo indicador de posición, en dp, usado tanto en la caja
+// de saturación/brillo como en el slider de matiz.
+private val ColorPickerThumbRadius = 12.dp
+
+// Selector de color completo: caja de saturación/brillo (arrastrable),
+// slider de matiz en arcoíris (arrastrable), y campo de texto para el hex.
+// Usa HSV (Hue/Saturation/Value) porque así es más fácil separar "qué color
+// es" (matiz) de "qué tan intenso/claro se ve" (saturación y brillo).
 @Composable
-private fun ColorSwatch(color: Color, selected: Boolean, onClick: () -> Unit) {
+private fun ColorPickerSection(selectedColor: Color, onColorSelected: (Color) -> Unit) {
+    // Convierte el color inicial a HSV una sola vez, para arrancar el
+    // picker en la posición correspondiente al color ya guardado.
+    val initialHsv = remember {
+        FloatArray(3).also { android.graphics.Color.colorToHSV(selectedColor.toArgb(), it) }
+    }
+    var hue by remember { mutableStateOf(initialHsv[0]) }
+    var saturation by remember { mutableStateOf(initialHsv[1]) }
+    var brightness by remember { mutableStateOf(initialHsv[2]) }
+
+    val currentColor = Color(android.graphics.Color.HSVToColor(floatArrayOf(hue, saturation, brightness)))
+
+    // Cada vez que el color resultante cambia (por arrastre o por hex),
+    // avisamos al resto de la app.
+    LaunchedEffect(currentColor) { onColorSelected(currentColor) }
+
+    // Texto del campo hex: se recalcula solo cuando currentColor cambia,
+    // así no le "pisamos" al usuario lo que está escribiendo a media escritura.
+    var hexText by remember(currentColor) { mutableStateOf(currentColor.toHexRgb()) }
+
+    Column {
+        SaturationBrightnessBox(
+            hue = hue,
+            saturation = saturation,
+            brightness = brightness,
+            onChange = { newSaturation, newBrightness ->
+                saturation = newSaturation
+                brightness = newBrightness
+            }
+        )
+
+        Box(modifier = Modifier.padding(top = 16.dp)) {
+            HueSlider(hue = hue, onHueChange = { hue = it })
+        }
+
+        OutlinedTextField(
+            value = hexText,
+            onValueChange = { typed ->
+                // Solo dejamos escribir dígitos hexadecimales, máximo 6 (RRGGBB).
+                val cleaned = typed.uppercase().filter { it.isDigit() || it in 'A'..'F' }.take(6)
+                hexText = cleaned
+                if (cleaned.length == 6) {
+                    val parsedArgb = ("FF$cleaned").toLongOrNull(16)?.toInt()
+                    if (parsedArgb != null) {
+                        val hsvFromHex = FloatArray(3)
+                        android.graphics.Color.colorToHSV(parsedArgb, hsvFromHex)
+                        hue = hsvFromHex[0]
+                        saturation = hsvFromHex[1]
+                        brightness = hsvFromHex[2]
+                    }
+                }
+            },
+            leadingIcon = { Text(text = "#", color = Color.White) },
+            singleLine = true,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 16.dp),
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedTextColor = Color.White,
+                unfocusedTextColor = Color.White,
+                focusedBorderColor = currentColor,
+                unfocusedBorderColor = Color.Gray
+            )
+        )
+    }
+}
+
+// Convierte este Color a un string "RRGGBB" en mayúsculas (sin el "#").
+private fun Color.toHexRgb(): String {
+    val argb = this.toArgb()
+    return String.format("%06X", argb and 0xFFFFFF)
+}
+
+// Caja de saturación (eje X: gris → color puro) y brillo (eje Y: blanco →
+// negro), con un círculo indicando la posición actual. Toca o arrastra
+// dentro para elegir.
+@Composable
+private fun SaturationBrightnessBox(
+    hue: Float,
+    saturation: Float,
+    brightness: Float,
+    onChange: (newSaturation: Float, newBrightness: Float) -> Unit
+) {
+    var boxSize by remember { mutableStateOf(IntSize.Zero) }
+    val pureHueColor = Color(android.graphics.Color.HSVToColor(floatArrayOf(hue, 1f, 1f)))
+    val density = LocalDensity.current
+    val thumbRadiusPx = with(density) { ColorPickerThumbRadius.toPx() }
+
+    // Actualiza saturación/brillo a partir de una posición táctil (en px).
+    fun updateFromPosition(x: Float, y: Float) {
+        if (boxSize.width == 0 || boxSize.height == 0) return
+        val newSaturation = (x / boxSize.width).coerceIn(0f, 1f)
+        val newBrightness = 1f - (y / boxSize.height).coerceIn(0f, 1f)
+        onChange(newSaturation, newBrightness)
+    }
+
     Box(
         modifier = Modifier
-            .size(36.dp)
-            .clip(CircleShape)
-            .background(color)
-            .then(
-                if (selected) {
-                    Modifier.border(2.dp, Color.White, CircleShape)
-                } else {
-                    Modifier
+            .fillMaxWidth()
+            .height(180.dp)
+            .clip(RoundedCornerShape(12.dp))
+            // Dos gradientes superpuestos aproximan el "plano" HSV de
+            // saturación (blanco -> color puro) y brillo (transparente -> negro).
+            .background(Brush.horizontalGradient(listOf(Color.White, pureHueColor)))
+            .background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black)))
+            .onSizeChanged { boxSize = it }
+            .pointerInput(Unit) {
+                detectTapGestures { offset -> updateFromPosition(offset.x, offset.y) }
+            }
+            .pointerInput(Unit) {
+                detectDragGestures { change, _ ->
+                    change.consume()
+                    updateFromPosition(change.position.x, change.position.y)
                 }
-            )
-            .clickable(onClick = onClick)
+            }
+    ) {
+        val thumbX = saturation * boxSize.width
+        val thumbY = (1f - brightness) * boxSize.height
+        Box(
+            modifier = Modifier
+                .offset {
+                    IntOffset(
+                        (thumbX - thumbRadiusPx).toInt(),
+                        (thumbY - thumbRadiusPx).toInt()
+                    )
+                }
+                .size(ColorPickerThumbRadius * 2)
+                .clip(CircleShape)
+                .border(3.dp, Color.White, CircleShape)
+        )
+    }
+}
+
+// Slider horizontal en degradado arcoíris para elegir el matiz (0°-360°).
+@Composable
+private fun HueSlider(hue: Float, onHueChange: (Float) -> Unit) {
+    var sliderWidth by remember { mutableStateOf(0) }
+    val density = LocalDensity.current
+    val thumbRadiusPx = with(density) { ColorPickerThumbRadius.toPx() }
+    val rainbow = Brush.horizontalGradient(
+        listOf(
+            Color.Red, Color.Yellow, Color.Green,
+            Color.Cyan, Color.Blue, Color.Magenta, Color.Red
+        )
     )
+
+    fun updateFromPosition(x: Float) {
+        if (sliderWidth == 0) return
+        onHueChange((x / sliderWidth * 360f).coerceIn(0f, 360f))
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(28.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .background(rainbow)
+            .onSizeChanged { sliderWidth = it.width }
+            .pointerInput(Unit) {
+                detectTapGestures { offset -> updateFromPosition(offset.x) }
+            }
+            .pointerInput(Unit) {
+                detectDragGestures { change, _ ->
+                    change.consume()
+                    updateFromPosition(change.position.x)
+                }
+            }
+    ) {
+        val thumbX = (hue / 360f) * sliderWidth
+        Box(
+            modifier = Modifier
+                .offset { IntOffset((thumbX - thumbRadiusPx).toInt(), 0) }
+                .size(ColorPickerThumbRadius * 2, 28.dp)
+                .clip(CircleShape)
+                .border(3.dp, Color.White, CircleShape)
+        )
+    }
 }
