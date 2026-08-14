@@ -3,10 +3,13 @@ package com.bicu.myapplication
 import android.app.Activity
 import android.content.Context
 import android.content.pm.ActivityInfo
+import android.net.Uri
 import android.os.Bundle
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.edit
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -20,12 +23,15 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -49,6 +55,8 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.font.Font
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
@@ -56,6 +64,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
 import androidx.compose.runtime.LaunchedEffect
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
@@ -160,6 +169,67 @@ private val ClockColorPalette = listOf(
     Color.Cyan, Color.Blue, Color(0xFF9C27B0), Color(0xFFE91E63), Color.Gray
 )
 
+// --- Fuente del reloj (predefinida o cargada por el usuario) ---
+
+private const val KEY_CLOCK_FONT = "clock_font_selection"
+// Marca especial en KEY_CLOCK_FONT que indica "usar la fuente cargada por
+// el usuario" en vez de una de las predefinidas.
+private const val CUSTOM_FONT_MARKER = "CUSTOM"
+// Siempre guardamos la fuente externa con el mismo nombre de archivo, así
+// no necesitamos recordar la ruta original ni pedir permisos de nuevo.
+private const val CUSTOM_FONT_FILENAME = "clock_custom_font.ttf"
+
+// Fuentes del sistema disponibles sin necesidad de cargar ningún archivo.
+enum class BuiltInFontOption(val label: String, val family: FontFamily) {
+    DEFAULT("Predeterminada", FontFamily.Default),
+    SERIF("Serif", FontFamily.Serif),
+    MONOSPACE("Monospace", FontFamily.Monospace),
+    CURSIVE("Cursiva", FontFamily.Cursive)
+}
+
+private fun loadClockFontSelection(activity: Activity): String {
+    val prefs = activity.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    return prefs.getString(KEY_CLOCK_FONT, BuiltInFontOption.DEFAULT.name)
+        ?: BuiltInFontOption.DEFAULT.name
+}
+
+private fun saveClockFontSelection(activity: Activity, selection: String) {
+    activity.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit {
+        putString(KEY_CLOCK_FONT, selection)
+    }
+}
+
+// Si ya existe un archivo de fuente personalizada guardado de una sesión
+// anterior, lo carga; si no, devuelve null (usaremos una predefinida).
+private fun loadCustomFontFamilyIfAny(activity: Activity): FontFamily? {
+    val file = File(activity.filesDir, CUSTOM_FONT_FILENAME)
+    if (!file.exists()) return null
+    return runCatching { FontFamily(Font(file)) }.getOrNull()
+}
+
+// Decide qué FontFamily usar según la selección guardada: la personalizada
+// (si aplica y sigue disponible) o una de las predefinidas.
+private fun resolveFontFamily(selection: String, customFontFamily: FontFamily?): FontFamily {
+    if (selection == CUSTOM_FONT_MARKER && customFontFamily != null) {
+        return customFontFamily
+    }
+    return BuiltInFontOption.entries.find { it.name == selection }?.family
+        ?: FontFamily.Default
+}
+
+// Copia el archivo elegido por el usuario (desde su Uri de content://) al
+// almacenamiento interno de la app, para poder volver a cargarlo después
+// sin depender de permisos sobre esa Uri externa.
+private fun copyPickedFontToInternalStorage(activity: Activity, uri: Uri): FontFamily? {
+    val destination = File(activity.filesDir, CUSTOM_FONT_FILENAME)
+    return runCatching {
+        activity.contentResolver.openInputStream(uri)?.use { input ->
+            destination.outputStream().use { output -> input.copyTo(output) }
+        }
+        FontFamily(Font(destination))
+    }.getOrNull()
+}
+
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -239,6 +309,12 @@ fun ClockScreen() {
     var clockColor by remember { mutableStateOf(loadClockColor(activity)) }
     var clockSizeFraction by remember { mutableStateOf(loadClockSizeFraction(activity)) }
     var clockStyle by remember { mutableStateOf(loadClockStyle(activity)) }
+    // Selección de fuente: nombre de una predefinida, o CUSTOM_FONT_MARKER
+    // si el usuario cargó su propio archivo. customFontFamily solo tiene
+    // valor cuando ya existe una fuente personalizada guardada en disco.
+    var clockFontSelection by remember { mutableStateOf(loadClockFontSelection(activity)) }
+    var customFontFamily by remember { mutableStateOf(loadCustomFontFamilyIfAny(activity)) }
+    val clockFontFamily = resolveFontFamily(clockFontSelection, customFontFamily)
 
     var currentTime by remember { mutableStateOf(formatTime()) }
 
@@ -310,6 +386,7 @@ fun ClockScreen() {
                 color = clockColor,
                 sizeFraction = clockSizeFraction,
                 style = clockStyle,
+                fontFamily = clockFontFamily,
                 cardWidth = cardWidth,
                 cardHeight = cardHeight
             )
@@ -319,6 +396,7 @@ fun ClockScreen() {
                 color = clockColor,
                 sizeFraction = clockSizeFraction,
                 style = clockStyle,
+                fontFamily = clockFontFamily,
                 cardWidth = cardWidth,
                 cardHeight = cardHeight
             )
@@ -351,12 +429,14 @@ fun ClockScreen() {
             )
         }
 
-        // Panel de personalización del reloj: solo visible tras el long-press.
+        // Pantalla de personalización del reloj: solo visible tras el long-press.
         if (showClockCustomizer) {
-            ClockCustomizerPanel(
+            ClockCustomizerScreen(
                 selectedColor = clockColor,
                 sizeFraction = clockSizeFraction,
                 selectedStyle = clockStyle,
+                fontSelection = clockFontSelection,
+                activeFontFamily = clockFontFamily,
                 onColorSelected = { selected ->
                     clockColor = selected
                     saveClockColor(activity, selected)
@@ -368,6 +448,18 @@ fun ClockScreen() {
                 onStyleSelected = { selected ->
                     clockStyle = selected
                     saveClockStyle(activity, selected)
+                },
+                onBuiltInFontSelected = { option ->
+                    clockFontSelection = option.name
+                    saveClockFontSelection(activity, option.name)
+                },
+                onCustomFontPicked = { uri ->
+                    val loaded = copyPickedFontToInternalStorage(activity, uri)
+                    if (loaded != null) {
+                        customFontFamily = loaded
+                        clockFontSelection = CUSTOM_FONT_MARKER
+                        saveClockFontSelection(activity, CUSTOM_FONT_MARKER)
+                    }
                 },
                 onClose = { showClockCustomizer = false }
             )
@@ -469,6 +561,7 @@ private fun DigitCard(
     color: Color,
     sizeFraction: Float,
     style: ClockFontStyleOption,
+    fontFamily: FontFamily,
     // Tamaño de la tarjeta ya calculado UNA vez en ClockScreen (a partir del
     // tamaño real de pantalla) y pasado igual a ambas tarjetas, para
     // garantizar que midan exactamente lo mismo.
@@ -506,7 +599,8 @@ private fun DigitCard(
             color = color,
             fontSize = fontSize,
             fontWeight = style.weight,
-            fontStyle = if (style.italic) FontStyle.Italic else FontStyle.Normal
+            fontStyle = if (style.italic) FontStyle.Italic else FontStyle.Normal,
+            fontFamily = fontFamily
         )
     }
 }
@@ -527,95 +621,169 @@ private fun ColonSeparator(color: Color) {
     }
 }
 
-// Panel de personalización del reloj: tamaño (slider), estilo (Light/Bold/
-// Cursiva) y color (paleta de swatches).
+// Pantalla completa de personalización del reloj: panel izquierdo con una
+// tarjeta de muestra en vivo, panel derecho con todos los controles
+// (tamaño, estilo, fuente y color).
 @Composable
-private fun ClockCustomizerPanel(
+private fun ClockCustomizerScreen(
     selectedColor: Color,
     sizeFraction: Float,
     selectedStyle: ClockFontStyleOption,
+    fontSelection: String,
+    activeFontFamily: FontFamily,
     onColorSelected: (Color) -> Unit,
     onSizeChanged: (Float) -> Unit,
     onStyleSelected: (ClockFontStyleOption) -> Unit,
+    onBuiltInFontSelected: (BuiltInFontOption) -> Unit,
+    onCustomFontPicked: (Uri) -> Unit,
     onClose: () -> Unit
 ) {
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color.Black.copy(alpha = 0.85f)),
-        contentAlignment = Alignment.Center
-    ) {
-        Column(
-            modifier = Modifier
-                .width(360.dp)
-                .padding(24.dp)
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+    // Selector de archivos del sistema: al elegir uno, entrega su Uri.
+    val fontPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri -> if (uri != null) onCustomFontPicked(uri) }
+
+    Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
+        Row(modifier = Modifier.fillMaxSize()) {
+            // --- Panel izquierdo: vista previa en vivo ---
+            BoxWithConstraints(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxHeight(),
+                contentAlignment = Alignment.Center
             ) {
-                Text(text = "Personalizar reloj", color = Color.White, fontSize = 22.sp)
-                IconButton(onClick = onClose) {
-                    Icon(Icons.Default.Close, contentDescription = "Cerrar", tint = Color.White)
-                }
+                // Tamaño de la tarjeta de muestra, proporcional a ESTE panel
+                // (no a la pantalla completa), para que se vea bien en el espacio disponible.
+                val previewCardWidth = maxWidth * 0.5f
+                val previewCardHeight = maxHeight * 0.75f
+                DigitCard(
+                    text = "12",
+                    color = selectedColor,
+                    sizeFraction = sizeFraction,
+                    style = selectedStyle,
+                    fontFamily = activeFontFamily,
+                    cardWidth = previewCardWidth,
+                    cardHeight = previewCardHeight
+                )
             }
 
-            // --- Tamaño (relativo al alto de la tarjeta, no sp absoluto) ---
-            Text(
-                text = "Tamaño",
-                color = Color.White,
-                fontSize = 16.sp,
-                modifier = Modifier.padding(top = 24.dp, bottom = 4.dp)
-            )
-            Slider(
-                value = sizeFraction,
-                onValueChange = onSizeChanged,
-                valueRange = CLOCK_SIZE_FRACTION_MIN..CLOCK_SIZE_FRACTION_MAX
-            )
+            // --- Panel derecho: controles, con scroll por si no caben todos ---
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxHeight()
+                    .verticalScroll(rememberScrollState())
+                    .padding(24.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(text = "Personalizar reloj", color = Color.White, fontSize = 22.sp)
+                    IconButton(onClick = onClose) {
+                        Icon(Icons.Default.Close, contentDescription = "Cerrar", tint = Color.White)
+                    }
+                }
 
-            // --- Estilo (Light / Bold / Cursiva) ---
-            Text(
-                text = "Estilo",
-                color = Color.White,
-                fontSize = 16.sp,
-                modifier = Modifier.padding(top = 16.dp, bottom = 8.dp)
-            )
-            ClockFontStyleOption.entries.forEach { option ->
+                // --- Tamaño (relativo al alto de la tarjeta, no sp absoluto) ---
+                Text(
+                    text = "Tamaño",
+                    color = Color.White,
+                    fontSize = 16.sp,
+                    modifier = Modifier.padding(top = 24.dp, bottom = 4.dp)
+                )
+                Slider(
+                    value = sizeFraction,
+                    onValueChange = onSizeChanged,
+                    valueRange = CLOCK_SIZE_FRACTION_MIN..CLOCK_SIZE_FRACTION_MAX
+                )
+
+                // --- Estilo (Light / Bold / Cursiva) ---
+                Text(
+                    text = "Estilo",
+                    color = Color.White,
+                    fontSize = 16.sp,
+                    modifier = Modifier.padding(top = 16.dp, bottom = 8.dp)
+                )
+                ClockFontStyleOption.entries.forEach { option ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onStyleSelected(option) }
+                            .padding(vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        RadioButton(
+                            selected = option == selectedStyle,
+                            onClick = { onStyleSelected(option) }
+                        )
+                        Text(text = option.label, color = Color.White, fontSize = 16.sp)
+                    }
+                }
+
+                // --- Fuente: predefinidas + carga de archivo externo ---
+                Text(
+                    text = "Fuente",
+                    color = Color.White,
+                    fontSize = 16.sp,
+                    modifier = Modifier.padding(top = 16.dp, bottom = 8.dp)
+                )
+                BuiltInFontOption.entries.forEach { option ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onBuiltInFontSelected(option) }
+                            .padding(vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        RadioButton(
+                            selected = fontSelection == option.name,
+                            onClick = { onBuiltInFontSelected(option) }
+                        )
+                        Text(text = option.label, color = Color.White, fontSize = 16.sp)
+                    }
+                }
+                // La fuente cargada por el usuario aparece como una opción más,
+                // seleccionada automáticamente en cuanto termina de cargarse.
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clickable { onStyleSelected(option) }
+                        .clickable { fontPickerLauncher.launch(arrayOf("font/ttf", "font/otf", "*/*")) }
                         .padding(vertical = 4.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     RadioButton(
-                        selected = option == selectedStyle,
-                        onClick = { onStyleSelected(option) }
+                        selected = fontSelection == CUSTOM_FONT_MARKER,
+                        onClick = { fontPickerLauncher.launch(arrayOf("font/ttf", "font/otf", "*/*")) }
                     )
-                    Text(text = option.label, color = Color.White, fontSize = 16.sp)
+                    Text(
+                        text = "Cargar fuente personalizada (.ttf/.otf)...",
+                        color = Color.White,
+                        fontSize = 16.sp
+                    )
                 }
-            }
 
-            // --- Color picker (swatches) ---
-            Text(
-                text = "Color",
-                color = Color.White,
-                fontSize = 16.sp,
-                modifier = Modifier.padding(top = 16.dp, bottom = 8.dp)
-            )
-            // Agrupa la paleta en filas de 5 swatches para que quepan en el panel.
-            ClockColorPalette.chunked(5).forEach { rowColors ->
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    modifier = Modifier.padding(bottom = 12.dp)
-                ) {
-                    rowColors.forEach { swatchColor ->
-                        ColorSwatch(
-                            color = swatchColor,
-                            selected = swatchColor == selectedColor,
-                            onClick = { onColorSelected(swatchColor) }
-                        )
+                // --- Color picker (swatches) ---
+                Text(
+                    text = "Color",
+                    color = Color.White,
+                    fontSize = 16.sp,
+                    modifier = Modifier.padding(top = 16.dp, bottom = 8.dp)
+                )
+                // Agrupa la paleta en filas de 5 swatches para que quepan en el panel.
+                ClockColorPalette.chunked(5).forEach { rowColors ->
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        modifier = Modifier.padding(bottom = 12.dp)
+                    ) {
+                        rowColors.forEach { swatchColor ->
+                            ColorSwatch(
+                                color = swatchColor,
+                                selected = swatchColor == selectedColor,
+                                onClick = { onColorSelected(swatchColor) }
+                            )
+                        }
                     }
                 }
             }
