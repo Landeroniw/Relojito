@@ -12,9 +12,12 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -31,6 +34,7 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.RadioButton
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -41,8 +45,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
@@ -77,6 +86,79 @@ private fun saveOrientationOption(activity: Activity, option: ScreenOrientationO
         putString(KEY_ORIENTATION, option.name)
     }
 }
+
+// --- Personalización del reloj (color, tamaño y estilo de fuente) ---
+
+private const val KEY_CLOCK_COLOR = "clock_color"
+private const val KEY_CLOCK_SIZE_FRACTION = "clock_size_fraction"
+private const val KEY_CLOCK_STYLE = "clock_style"
+
+private val DEFAULT_CLOCK_COLOR = Color.White
+// Tamaño del número como fracción del alto de su tarjeta (0.6 = 60% del alto).
+private const val DEFAULT_CLOCK_SIZE_FRACTION = 0.6f
+
+// Límites de esa fracción: en 1.0 el número usa el tamaño máximo seguro
+// calculado dentro de la tarjeta, en 0.3 queda pequeño con mucho aire alrededor.
+// Como DigitCard ya calcula un techo que nunca rompe el marco, es seguro
+// permitir hasta 1.0 sin riesgo de desbordar la tarjeta.
+private const val CLOCK_SIZE_FRACTION_MIN = 0.3f
+private const val CLOCK_SIZE_FRACTION_MAX = 1.0f
+
+// Tamaño fijo de las tarjetas, proporcional a la pantalla (como usar
+// unidades vh/vw en web): 80% del alto y 15% del ancho de la pantalla.
+private const val CARD_HEIGHT_SCREEN_FRACTION = 0.8f
+private const val CARD_WIDTH_SCREEN_FRACTION = 0.25f
+
+// Las tres variantes de estilo que pidió el usuario. "Cursiva" usa peso
+// normal + italic; Light y Bold cambian el grosor del trazo.
+enum class ClockFontStyleOption(val label: String, val weight: FontWeight, val italic: Boolean) {
+    LIGHT("Light", FontWeight.Light, italic = false),
+    BOLD("Bold", FontWeight.Bold, italic = false),
+    ITALIC("Cursiva", FontWeight.Normal, italic = true)
+}
+
+private fun loadClockColor(activity: Activity): Color {
+    val prefs = activity.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    val argb = prefs.getInt(KEY_CLOCK_COLOR, DEFAULT_CLOCK_COLOR.toArgb())
+    return Color(argb)
+}
+
+private fun saveClockColor(activity: Activity, color: Color) {
+    activity.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit {
+        putInt(KEY_CLOCK_COLOR, color.toArgb())
+    }
+}
+
+private fun loadClockSizeFraction(activity: Activity): Float {
+    val prefs = activity.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    return prefs.getFloat(KEY_CLOCK_SIZE_FRACTION, DEFAULT_CLOCK_SIZE_FRACTION)
+}
+
+private fun saveClockSizeFraction(activity: Activity, fraction: Float) {
+    activity.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit {
+        putFloat(KEY_CLOCK_SIZE_FRACTION, fraction)
+    }
+}
+
+private fun loadClockStyle(activity: Activity): ClockFontStyleOption {
+    val prefs = activity.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    val savedName = prefs.getString(KEY_CLOCK_STYLE, ClockFontStyleOption.LIGHT.name)
+    return ClockFontStyleOption.entries.find { it.name == savedName }
+        ?: ClockFontStyleOption.LIGHT
+}
+
+private fun saveClockStyle(activity: Activity, style: ClockFontStyleOption) {
+    activity.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit {
+        putString(KEY_CLOCK_STYLE, style.name)
+    }
+}
+
+// Paleta de colores preseleccionados para el color picker (versión simple:
+// swatches en vez de una rueda HSV completa).
+private val ClockColorPalette = listOf(
+    Color.White, Color.Red, Color(0xFFFF9800), Color.Yellow, Color.Green,
+    Color.Cyan, Color.Blue, Color(0xFF9C27B0), Color(0xFFE91E63), Color.Gray
+)
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -150,6 +232,14 @@ fun ClockScreen() {
     // Orientación actualmente seleccionada, cargada desde SharedPreferences.
     var orientationOption by remember { mutableStateOf(loadOrientationOption(activity)) }
 
+    // Controla si el panel de personalización del reloj está visible
+    // (se abre al mantener presionado el reloj).
+    var showClockCustomizer by remember { mutableStateOf(false) }
+    // Apariencia actual del reloj: color, tamaño y estilo de fuente.
+    var clockColor by remember { mutableStateOf(loadClockColor(activity)) }
+    var clockSizeFraction by remember { mutableStateOf(loadClockSizeFraction(activity)) }
+    var clockStyle by remember { mutableStateOf(loadClockStyle(activity)) }
+
     var currentTime by remember { mutableStateOf(formatTime()) }
 
     // Posición actual del desplazamiento anti burn-in, empieza centrada (0, 0).
@@ -184,7 +274,12 @@ fun ClockScreen() {
         }
     }
     //Definición del fondo como negro y el estilo de la fuente del reloj
-    Box(
+    // BoxWithConstraints (en vez de Box) nos da maxWidth/maxHeight = el
+    // tamaño real de la pantalla, para calcular el tamaño de tarjeta UNA
+    // sola vez y pasarlo fijo a ambas tarjetas (evita que cada una calcule
+    // su propio porcentaje por separado dentro del Row, que es donde
+    // estaba la inconsistencia de tamaños entre la izquierda y la derecha).
+    BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
             .background(Color.Black),
@@ -195,14 +290,38 @@ fun ClockScreen() {
         val hourText = timeParts.getOrElse(0) { "00" }
         val minuteText = timeParts.getOrElse(1) { "00" }
 
+        // Tamaño de tarjeta calculado una sola vez a partir de la pantalla real.
+        val cardWidth = maxWidth * CARD_WIDTH_SCREEN_FRACTION
+        val cardHeight = maxHeight * CARD_HEIGHT_SCREEN_FRACTION
+
         Row(
-            modifier = Modifier.offset(x = offsetX, y = offsetY),
+            modifier = Modifier
+                .offset(x = offsetX, y = offsetY)
+                // detectTapGestures con onLongPress: mantener presionado el
+                // reloj abre el panel de personalización.
+                .pointerInput(Unit) {
+                    detectTapGestures(onLongPress = { showClockCustomizer = true })
+                },
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(20.dp)
         ) {
-            DigitCard(text = hourText)
-            ColonSeparator()
-            DigitCard(text = minuteText)
+            DigitCard(
+                text = hourText,
+                color = clockColor,
+                sizeFraction = clockSizeFraction,
+                style = clockStyle,
+                cardWidth = cardWidth,
+                cardHeight = cardHeight
+            )
+            ColonSeparator(color = clockColor)
+            DigitCard(
+                text = minuteText,
+                color = clockColor,
+                sizeFraction = clockSizeFraction,
+                style = clockStyle,
+                cardWidth = cardWidth,
+                cardHeight = cardHeight
+            )
         }
 
         // Ícono de engrane en la esquina superior derecha para abrir ajustes.
@@ -229,6 +348,28 @@ fun ClockScreen() {
                     activity.requestedOrientation = selected.androidValue
                 },
                 onClose = { showSettings = false }
+            )
+        }
+
+        // Panel de personalización del reloj: solo visible tras el long-press.
+        if (showClockCustomizer) {
+            ClockCustomizerPanel(
+                selectedColor = clockColor,
+                sizeFraction = clockSizeFraction,
+                selectedStyle = clockStyle,
+                onColorSelected = { selected ->
+                    clockColor = selected
+                    saveClockColor(activity, selected)
+                },
+                onSizeChanged = { newFraction ->
+                    clockSizeFraction = newFraction
+                    saveClockSizeFraction(activity, newFraction)
+                },
+                onStyleSelected = { selected ->
+                    clockStyle = selected
+                    saveClockStyle(activity, selected)
+                },
+                onClose = { showClockCustomizer = false }
             )
         }
     }
@@ -302,36 +443,202 @@ private fun formatTime(): String {
 // del fondo general (mantiene buen contraste sin ser un gris demasiado claro).
 private val DigitCardColor = Color(0xFF1C1C1E)
 
-// Tarjeta redondeada con los dos dígitos de la hora o de los minutos.
+// Margen interno que dejamos libre dentro de la tarjeta (a cada lado / arriba
+// y abajo) para que el número nunca quede pegado al borde redondeado.
+private const val CARD_INNER_PADDING_FRACTION = 0.12f
+
+// Ancho aproximado de un dígito respecto a su propio tamaño de fuente, para
+// fuentes sans-serif estándar. Es una estimación (no medimos el texto real),
+// pero es suficiente para calcular un techo seguro y evitar que se desborde.
+private const val DIGIT_WIDTH_TO_FONT_SIZE_RATIO = 0.62f
+private const val DIGITS_PER_CARD = 2
+
+// Tarjeta con tamaño FIJO proporcional a la pantalla (80% alto / 15% ancho,
+// como usar vh/vw en CSS) — no crece ni encoge con el contenido.
+//
+// El tamaño del número tiene "doble reactividad":
+// 1) La tarjeta ya es proporcional a la pantalla (reactividad #1).
+// 2) Dentro de la tarjeta, calculamos el tamaño de fuente MÁXIMO que cabe
+//    sin romper ni el alto ni el ancho disponibles, y "sizeFraction" (el
+//    slider) solo escala qué tan cerca de ese máximo seguro queremos estar
+//    (reactividad #2). Así el número nunca puede salirse del marco gris,
+//    sin importar qué tan arriba se mueva el slider.
 @Composable
-private fun DigitCard(text: String) {
+private fun DigitCard(
+    text: String,
+    color: Color,
+    sizeFraction: Float,
+    style: ClockFontStyleOption,
+    // Tamaño de la tarjeta ya calculado UNA vez en ClockScreen (a partir del
+    // tamaño real de pantalla) y pasado igual a ambas tarjetas, para
+    // garantizar que midan exactamente lo mismo.
+    cardWidth: Dp,
+    cardHeight: Dp
+) {
     Box(
         modifier = Modifier
+            .size(width = cardWidth, height = cardHeight)
             .clip(RoundedCornerShape(28.dp))
-            .background(DigitCardColor)
-            .padding(horizontal = 32.dp, vertical = 16.dp),
+            .background(DigitCardColor),
         contentAlignment = Alignment.Center
     ) {
+        val density = LocalDensity.current
+
+        // Espacio realmente disponible para el texto, descontando el margen interno.
+        val usableHeight = cardHeight * (1f - CARD_INNER_PADDING_FRACTION * 2)
+        val usableWidth = cardWidth * (1f - CARD_INNER_PADDING_FRACTION * 2)
+
+        // Tamaño máximo que el texto podría tener según cada dimensión por separado.
+        val maxFontSizeFromHeight = usableHeight
+        val maxFontSizeFromWidth = usableWidth / (DIGITS_PER_CARD * DIGIT_WIDTH_TO_FONT_SIZE_RATIO)
+
+        // El techo real es el más restrictivo de los dos: así el número
+        // jamás rompe la barrera de la tarjeta en ninguna dirección.
+        val safeMaxFontSize = if (maxFontSizeFromHeight < maxFontSizeFromWidth) {
+            maxFontSizeFromHeight
+        } else {
+            maxFontSizeFromWidth
+        }
+
+        val fontSize = with(density) { (safeMaxFontSize * sizeFraction).toSp() }
         Text(
             text = text,
-            color = Color.White,
-            fontSize = 96.sp,
-            fontWeight = FontWeight.Light
+            color = color,
+            fontSize = fontSize,
+            fontWeight = style.weight,
+            fontStyle = if (style.italic) FontStyle.Italic else FontStyle.Normal
         )
     }
 }
 
 // Los dos puntos verticales que separan la tarjeta de hora de la de minutos.
+// Usa el mismo color que el reloj para que se vea como un solo conjunto.
 @Composable
-private fun ColonSeparator() {
+private fun ColonSeparator(color: Color) {
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         repeat(2) {
             Box(
                 modifier = Modifier
                     .size(10.dp)
                     .clip(CircleShape)
-                    .background(Color.White)
+                    .background(color)
             )
         }
     }
+}
+
+// Panel de personalización del reloj: tamaño (slider), estilo (Light/Bold/
+// Cursiva) y color (paleta de swatches).
+@Composable
+private fun ClockCustomizerPanel(
+    selectedColor: Color,
+    sizeFraction: Float,
+    selectedStyle: ClockFontStyleOption,
+    onColorSelected: (Color) -> Unit,
+    onSizeChanged: (Float) -> Unit,
+    onStyleSelected: (ClockFontStyleOption) -> Unit,
+    onClose: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.85f)),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            modifier = Modifier
+                .width(360.dp)
+                .padding(24.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(text = "Personalizar reloj", color = Color.White, fontSize = 22.sp)
+                IconButton(onClick = onClose) {
+                    Icon(Icons.Default.Close, contentDescription = "Cerrar", tint = Color.White)
+                }
+            }
+
+            // --- Tamaño (relativo al alto de la tarjeta, no sp absoluto) ---
+            Text(
+                text = "Tamaño",
+                color = Color.White,
+                fontSize = 16.sp,
+                modifier = Modifier.padding(top = 24.dp, bottom = 4.dp)
+            )
+            Slider(
+                value = sizeFraction,
+                onValueChange = onSizeChanged,
+                valueRange = CLOCK_SIZE_FRACTION_MIN..CLOCK_SIZE_FRACTION_MAX
+            )
+
+            // --- Estilo (Light / Bold / Cursiva) ---
+            Text(
+                text = "Estilo",
+                color = Color.White,
+                fontSize = 16.sp,
+                modifier = Modifier.padding(top = 16.dp, bottom = 8.dp)
+            )
+            ClockFontStyleOption.entries.forEach { option ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onStyleSelected(option) }
+                        .padding(vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    RadioButton(
+                        selected = option == selectedStyle,
+                        onClick = { onStyleSelected(option) }
+                    )
+                    Text(text = option.label, color = Color.White, fontSize = 16.sp)
+                }
+            }
+
+            // --- Color picker (swatches) ---
+            Text(
+                text = "Color",
+                color = Color.White,
+                fontSize = 16.sp,
+                modifier = Modifier.padding(top = 16.dp, bottom = 8.dp)
+            )
+            // Agrupa la paleta en filas de 5 swatches para que quepan en el panel.
+            ClockColorPalette.chunked(5).forEach { rowColors ->
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    modifier = Modifier.padding(bottom = 12.dp)
+                ) {
+                    rowColors.forEach { swatchColor ->
+                        ColorSwatch(
+                            color = swatchColor,
+                            selected = swatchColor == selectedColor,
+                            onClick = { onColorSelected(swatchColor) }
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Un círculo de color seleccionable dentro del color picker. El borde blanco
+// indica cuál es el color activo actualmente.
+@Composable
+private fun ColorSwatch(color: Color, selected: Boolean, onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .size(36.dp)
+            .clip(CircleShape)
+            .background(color)
+            .then(
+                if (selected) {
+                    Modifier.border(2.dp, Color.White, CircleShape)
+                } else {
+                    Modifier
+                }
+            )
+            .clickable(onClick = onClick)
+    )
 }
